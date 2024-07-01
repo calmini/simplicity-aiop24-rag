@@ -1,4 +1,4 @@
-from typing import List
+from typing import Dict, List
 import qdrant_client
 
 from llama_index.core.llms.llm import LLM
@@ -15,6 +15,8 @@ from llama_index.core.embeddings import BaseEmbedding
 from llama_index.core.retrievers import BaseRetriever
 from llama_index.core.schema import NodeWithScore
 from llama_index.core.base.llms.types import CompletionResponse
+from llama_index.core.retrievers import RecursiveRetriever
+from llama_index.core.schema import IndexNode
 
 from custom.template import QA_TEMPLATE
 
@@ -55,6 +57,31 @@ class QdrantRetriever(BaseRetriever):
             node_with_scores.append(NodeWithScore(node=node, score=similarity))
         return node_with_scores
 
+class MyCustomRecursiveRetriever(BaseRetriever):
+
+    def __init__(
+            self,
+            node_references: Dict[str, IndexNode],
+            vector_store_index: VectorStoreIndex,
+            similarity_top_k: int = 2,
+    ):
+        self.vector_store_index = vector_store_index
+        self.similarity_top_k = similarity_top_k
+        self._retriever = vector_store_index.as_retriever(similarity_top_k=self.similarity_top_k)
+        self._recursive_retriever = RecursiveRetriever(
+            root_id="custom-vector-recursive-starter",
+            retriever_dict = {"custom-vector-recursive-starter": self._retriever},
+            node_dict=node_references,
+            verbose=False
+        )
+        super().__init__()
+    
+    async def _aretrieve(self, query_bundle: QueryBundle) -> List[NodeWithScore]:
+        return await self._recursive_retriever.aretrieve(query_bundle)
+
+    def _retrieve(self, query_bundle: QueryBundle) -> List[NodeWithScore]:
+        return self._recursive_retriever.retrieve(query_bundle)
+
 
 async def generation_with_knowledge_retrieval(
     query_str: str,
@@ -84,3 +111,27 @@ async def generation_with_knowledge_retrieval(
         progress.update(1)
     return ret
 
+async def generation_with_recursive_knowledge_retrieval(
+    query_str: str,
+    retriever: BaseRetriever,
+    llm: LLM,
+    qa_template: str = QA_TEMPLATE,
+    reranker: BaseNodePostprocessor | None = None,
+    debug: bool = False,
+    progress=None,
+) -> CompletionResponse:
+    query_bundle = QueryBundle(query_str=query_str)
+    node_with_scores = await retriever.aretrieve(query_bundle)
+    if reranker:
+        node_with_scores = reranker.postprocess_nodes(node_with_scores, query_bundle)
+    
+    context_str = "\n\n".join(
+        [f"{node.text}" for node in node_with_scores]
+    )
+    fmt_qa_prompt = PromptTemplate(qa_template).format(
+        context_str=context_str, query_str=query_str
+    )
+    ret = await llm.acomplete(fmt_qa_prompt)
+    if progress:
+        progress.update(1)
+    return ret
