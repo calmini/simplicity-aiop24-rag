@@ -12,6 +12,7 @@ from qdrant_client import AsyncQdrantClient, models
 from qdrant_client.http.exceptions import UnexpectedResponse
 from llama_index.core import VectorStoreIndex
 from llama_index.core.schema import IndexNode
+from llama_index.legacy.llms import OpenAILike
 
 from custom.template import SUMMARY_EXTRACT_TEMPLATE
 from custom.transformation import CustomFilePathExtractor, CustomTitleExtractor
@@ -82,10 +83,10 @@ async def build_vector_store(
 def build_vector_store_index(
     documents: List[Document],
     embedding_model: BaseEmbedding,
-    parent_chunk_size: int,
-    parent_chunk_overlap: int,
-    sub_chunk_size: List[int],
-    sub_chunk_overlap: int
+    parent_chunk_size: int = 1024,
+    parent_chunk_overlap: int = 0,
+    sub_chunk_size: List[int] = [128, 256, 512],
+    sub_chunk_overlap: int = 20
 ) -> Tuple[VectorStoreIndex, Dict[str, IndexNode]]:
     
     # 定义parent Chunk
@@ -115,7 +116,7 @@ def build_vector_store_index(
     node_reference = {node.node_id: node for node in all_nodes}
     vector_store_index = VectorStoreIndex(
         nodes = all_nodes,
-        use_async = True,
+        use_async = False,
         embedding_model = embedding_model
     )
 

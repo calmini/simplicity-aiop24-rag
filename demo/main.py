@@ -63,7 +63,7 @@ async def main():
     retriever = MyCustomRecursiveRetriever(
         node_references = node_references,
         vector_store_index = vector_store_index,
-        similarity_top_k = 5
+        similarity_top_k = 3
     )
 
     queries = read_jsonl("question.jsonl")
