@@ -99,3 +99,5 @@ tzdata==2024.1
 urllib3==2.2.1
 wrapt==1.16.0
 yarl==1.9.4
+rank_bm25==0.2.2
+jieba==0.42.1

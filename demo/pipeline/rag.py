@@ -1,10 +1,13 @@
-from typing import Dict, List
+from collections import namedtuple
+from typing import Dict, List, Sequence, Set
+from llama_index.core.callbacks.base import CallbackManager
 import qdrant_client
 
 from llama_index.core.llms.llm import LLM
 from llama_index.vector_stores.qdrant import QdrantVectorStore
 from llama_index.core.postprocessor.types import BaseNodePostprocessor
 from llama_index.core.vector_stores import VectorStoreQuery
+from qdrant_client.http.models import Filter, FieldCondition, MatchValue, MatchAny
 from llama_index.core import (
     QueryBundle,
     PromptTemplate,
@@ -13,12 +16,13 @@ from llama_index.core import (
 )
 from llama_index.core.embeddings import BaseEmbedding
 from llama_index.core.retrievers import BaseRetriever
-from llama_index.core.schema import NodeWithScore
+from llama_index.core.schema import NodeWithScore, Document
 from llama_index.core.base.llms.types import CompletionResponse
 from llama_index.core.retrievers import RecursiveRetriever
 from llama_index.core.schema import IndexNode
 
 from custom.template import QA_TEMPLATE
+from ingestion import retrieve_doc_by_bm25_with_keyword
 
 
 class QdrantRetriever(BaseRetriever):
@@ -56,6 +60,20 @@ class QdrantRetriever(BaseRetriever):
         for node, similarity in zip(query_result.nodes, query_result.similarities):
             node_with_scores.append(NodeWithScore(node=node, score=similarity))
         return node_with_scores
+    
+    # 支持带过滤器的查询
+    async def aretrieve_with_filters(self, query_bundle: QueryBundle, filters: Filter) -> List[NodeWithScore]:
+        query_embedding = self._embed_model.get_query_embedding(query_bundle.query_str)
+        vector_store_query = VectorStoreQuery(
+            query_embedding, similarity_top_k=self._similarity_top_k
+        )
+
+        query_result = await self._vector_store.aquery(vector_store_query, qdrant_filters=filters)
+        node_with_scores = []
+        for node, similarity in zip(query_result.nodes, query_result.similarities):
+            node_with_scores.append(NodeWithScore(node=node, score=similarity))
+        return node_with_scores
+
 
 class MyCustomRecursiveRetriever(BaseRetriever):
 
@@ -83,12 +101,18 @@ class MyCustomRecursiveRetriever(BaseRetriever):
         return self._recursive_retriever.retrieve(query_bundle)
 
 
+def generate_qdrant_filters(doc_ids: List[str]) -> Filter:
+    return Filter(
+        must = [FieldCondition(key="doc_id", match=MatchAny(any=doc_ids))]
+    )
+
+
 async def generation_with_knowledge_retrieval(
     query_str: str,
     retriever: BaseRetriever,
     llm: LLM,
     qa_template: str = QA_TEMPLATE,
-    reranker: BaseNodePostprocessor | None = None,
+    reranker: BaseNodePostprocessor = None,
     debug: bool = False,
     progress=None,
 ) -> CompletionResponse:
@@ -116,7 +140,7 @@ async def generation_with_recursive_knowledge_retrieval(
     retriever: BaseRetriever,
     llm: LLM,
     qa_template: str = QA_TEMPLATE,
-    reranker: BaseNodePostprocessor | None = None,
+    reranker: BaseNodePostprocessor = None,
     debug: bool = False,
     progress=None,
 ) -> CompletionResponse:
@@ -135,3 +159,58 @@ async def generation_with_recursive_knowledge_retrieval(
     if progress:
         progress.update(1)
     return ret
+
+
+async def generate_with_knowledge_retrieve_enhanced_by_keyword(
+    document_collections: Sequence[Document],
+    keywords: List[namedtuple],
+    kw2doc: Dict[str, Set[str]],
+    doc_cache: Dict[str, List[str]],
+    query_str: str,
+    retriever: BaseRetriever,
+    llm: LLM,
+    qa_template: str = QA_TEMPLATE,
+    progress=None
+) -> CompletionResponse:
+    
+    query_bundle = QueryBundle(query_str=query_str)
+    
+    # 获取相关文档id
+    doc_id_collections, keyword_in_query = retrieve_doc_by_bm25_with_keyword(
+        document_collections = document_collections,
+        llm = llm,
+        keywords = keywords,
+        kw2doc = kw2doc,
+        doc_cache = doc_cache,
+        query_str = query_str,
+        top_k = 100
+    )
+
+    # 增加了关键词过滤
+    if (len(doc_id_collections)):
+        filters = generate_qdrant_filters(doc_id_collections)
+        node_with_scores = await retriever.aretrieve_with_filters(query_bundle, filters)
+        if (len(node_with_scores) == 0):
+            # 兜底
+            node_with_scores = await retriever.aretrieve(query_bundle)
+    else:
+        node_with_scores = await retriever.aretrieve(query_bundle)
+    
+
+    context_str = "\n\n".join(
+        [f"{node.metadata['document_title']}: {node.text}" for node in node_with_scores]
+    )
+
+    keyword_descriptions = "\n".join([f"关键词: {kw.keyword}, 英文全称: {kw.fullKeywordEn}, 中文全称: {kw.fullKeywordCn}" for kw in keyword_in_query]) \
+        if len(keyword_in_query) else ""
+
+    fmt_qa_prompt = PromptTemplate(qa_template).format(
+        keyword_descriptions = keyword_descriptions, context_str=context_str, query_str=query_str
+    )
+    
+    ret = await llm.acomplete(fmt_qa_prompt)
+    if progress:
+        progress.update(1)  
+    return ret
+
+

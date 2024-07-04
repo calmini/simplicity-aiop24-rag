@@ -1,13 +1,13 @@
 from typing import Any, Dict, List, Optional, Sequence
 from llama_index.core.extractors.interface import BaseExtractor
-from llama_index.core.schema import BaseNode
+from llama_index.core.schema import BaseNode,Document,TextNode
 from llama_index.core.llms.llm import LLM
-from llama_index.core.schema import BaseNode, TextNode
 from llama_index.core.prompts import PromptTemplate
 from llama_index.core.async_utils import run_jobs
 from llama_index.legacy.llms import OpenAILike as OpenAI
 from llama_index.core.bridge.pydantic import Field, PrivateAttr
-from template import SUMMARY_EXTRACT_TEMPLATE
+from .template import SUMMARY_EXTRACT_TEMPLATE, KEYWORD_EXTRACT_TEMPLATE
+from collections import namedtuple
 
 
 class CustomFilePathExtractor(BaseExtractor):
@@ -55,6 +55,36 @@ class CustomTitleExtractor(BaseExtractor):
             metadata_list.append(node.metadata)
 
         return metadata_list
+
+## 可以在这里加上一些metadata -> 支持Filter的工具
+class CustomDocumentIdExtractor(BaseExtractor):
+    documentIdFileMapper: Dict[str, str]
+
+    def __init__(self, documentIdFileMapper: Dict[str, str], **kwargs):
+        super().__init__(documentIdFileMapper=documentIdFileMapper, **kwargs)
+
+    @classmethod
+    def class_name(cls) -> str:
+        return "CustomDocumentIdExtractor"
+    
+    async def aextract(self, nodes: Sequence[BaseNode]):
+        metadata_list = []
+        for node in nodes:
+            file_path = node.metadata["file_path"]
+            doc_id = self.documentIdFileMapper.get(file_path, "")
+            node.metadata["doc_id"] = doc_id
+            metadata_list.append(node.metadata)
+        return metadata_list
+    
+    def extract(self, nodes: Sequence[BaseNode]):
+        metadata_list = []
+        for node in nodes:
+            file_path = node.metadata["file_path"]
+            doc_id = self.documentIdFileMapper.get(file_path, "")
+            node.metadata["doc_id"] = doc_id
+            metadata_list.append(node.metadata)
+        return metadata_list
+    
 
 class CustomSummaryExtractor(BaseExtractor):
 
@@ -163,3 +193,44 @@ class CustomSummaryExtractor(BaseExtractor):
                 metadata["section_summary"] = node_summaries[i]
         
         return metadata_list
+
+class SimpleGivenKeywordExtractor:
+
+    def __init__(self, 
+                 keywordsMapper: Dict[str, List[namedtuple]]):
+        self.given_keywords = keywordsMapper
+    
+    def _extract(self, text: str):
+        keywordsInclude = list()
+        keys = self.given_keywords.keys()
+        for key in keys:
+            keywordTuple = self.given_keywords[key]
+            if (key in text or any(x.fullKeywordEn in text or x.fullKeywordCn in text for x in keywordTuple)):
+                keywordsInclude.extend(self.given_keywords[key])
+        
+        return keywordsInclude
+
+    def extract_documents(self, documents: Document) -> List[str]:
+        return self._extract(documents.text)
+    
+    def extract_node(self, node: TextNode) -> List[str]:
+        return self._extract(node.text)
+
+class GLMKeywordExtractor:
+
+    def __init__(self, 
+                 llm: OpenAI,
+                 query_template: str = KEYWORD_EXTRACT_TEMPLATE) -> None:
+        self._llm = llm
+        self._query_template = query_template
+
+    async def aextract_query(self, query: str) -> List[str]:
+        # 通过LLM提取问题中的关键词
+        response = await self._llm.acomplete(
+            PromptTemplate(self._query_template).format(query_str=query)
+        )
+        if response.text != "不存在名词":
+            return response.text.split(",")
+        
+        return list()
+
