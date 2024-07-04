@@ -22,7 +22,7 @@ from llama_index.core.retrievers import RecursiveRetriever
 from llama_index.core.schema import IndexNode
 
 from custom.template import QA_TEMPLATE
-from ingestion import retrieve_doc_by_bm25_with_keyword
+from .ingestion import retrieve_doc_by_bm25_with_keyword
 
 
 class QdrantRetriever(BaseRetriever):
@@ -176,14 +176,14 @@ async def generate_with_knowledge_retrieve_enhanced_by_keyword(
     query_bundle = QueryBundle(query_str=query_str)
     
     # 获取相关文档id
-    doc_id_collections, keyword_in_query = retrieve_doc_by_bm25_with_keyword(
+    doc_id_collections, keyword_in_query = await retrieve_doc_by_bm25_with_keyword(
         document_collections = document_collections,
         llm = llm,
         keywords = keywords,
         kw2doc = kw2doc,
         doc_cache = doc_cache,
         query_str = query_str,
-        top_k = 100
+        top_k = 1000
     )
 
     # 增加了关键词过滤
@@ -209,8 +209,23 @@ async def generate_with_knowledge_retrieve_enhanced_by_keyword(
     )
     
     ret = await llm.acomplete(fmt_qa_prompt)
-    if progress:
-        progress.update(1)  
+
+    # 重新调整
+    if ("对不起" in ret.text):
+        print(f"重新生成问题 {query_str} 的答案...")
+        node_with_scores = await retriever.aretrieve(query_bundle) # no filters
+        context_str = "\n\n".join(
+            [f"{node.metadata['document_title']}: {node.text}" for node in node_with_scores]
+        )
+
+        keyword_descriptions = "\n".join([f"关键词: {kw.keyword}, 英文全称: {kw.fullKeywordEn}, 中文全称: {kw.fullKeywordCn}" for kw in keyword_in_query]) \
+            if len(keyword_in_query) else ""
+
+        fmt_qa_prompt = PromptTemplate(qa_template).format(
+            keyword_descriptions = keyword_descriptions, context_str=context_str, query_str=query_str
+        )
+        ret = await llm.acomplete(fmt_qa_prompt)
+
     return ret
 
 

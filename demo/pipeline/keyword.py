@@ -5,7 +5,7 @@ from typing import Dict, List
 from llama_index.core.schema import Document
 import jieba
 
-from demo.custom.transformation import SimpleGivenKeywordExtractor
+from custom.transformation import SimpleGivenKeywordExtractor
 
 # 定义NamedTuple结构
 Acronym = namedtuple('Acronym', ['keyword', 'fullKeywordEn', 'fullKeywordCn'])
